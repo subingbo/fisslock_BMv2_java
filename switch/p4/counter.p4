@@ -1,3 +1,16 @@
+/*
+ * ============================================================================
+ * FissLock — 通知计数器（Notification Counter）三份 stage 副本
+ * ============================================================================
+ * CounterTable_1/2/3 逻辑完全相同，仅寄存器实例不同；
+ * ingress 根据 lock.id[31:19] 选择 0→1、1→2、2→3（百万锁分 stage）。
+ *
+ * 作用（LEARNING_zh.md 路径 2）：
+ *   - ACQUIRE shared：notification_cnt++
+ *   - TRANSFER/FREE 且原 shared：比较包内 ncnt，一致则 agent_changed=1 并清零
+ * ============================================================================
+ */
+
 control CounterTable_1(
 	inout header_t hdr,
 	inout metadata_t ig_md) {
@@ -16,6 +29,7 @@ control CounterTable_1(
         }
     };
 
+    /* 与 BMv2 cnt_cmp 相同：一致则清零计数并 flag=1，否则认为网中有在途旧包 */
     RegisterAction<bit<8>, lid_t, bit<1>>(notification_cnt_1) cmp_ncnt = {
         void apply(inout bit<8> value, out bit<1> flag) {
             if (value == hdr.lock.ncnt) {
@@ -81,6 +95,7 @@ control CounterTable_1(
     }
 }
 
+/* CounterTable_2：服务 lock.id[31:19]==1 的 slice（表项与 _1 相同） */
 control CounterTable_2(
 	inout header_t hdr,
 	inout metadata_t ig_md) {
@@ -164,6 +179,7 @@ control CounterTable_2(
     }
 }
 
+/* CounterTable_3：服务 lock.id[31:19]==2 的 slice */
 control CounterTable_3(
 	inout header_t hdr,
 	inout metadata_t ig_md) {

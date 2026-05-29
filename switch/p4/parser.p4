@@ -1,3 +1,14 @@
+/*
+ * ============================================================================
+ * FissLock Tofino — Parser / Deparser
+ * ============================================================================
+ * IngressParser：入口解析 Tofino intrinsic → 以太网 → IPv4/ARP/IPv6 → UDP
+ *   - UDP dport 20001/20002 → parse_lock（FissLock 锁包）
+ *   - UDP dport 4791 → parse_roce（RDMA，与锁业务并行）
+ * EgressParser：出口侧对组播副本再解析一遍（结构同 ingress）
+ * IngressDeparser：重算 IPv4 checksum 后 emit 全部 header
+ * ============================================================================
+ */
 
 parser IngressParser(
 	packet_in pkt,
@@ -19,7 +30,7 @@ parser IngressParser(
     }
 
     state parse_port_metadata {
-        pkt.advance(PORT_METADATA_SIZE);
+        pkt.advance(PORT_METADATA_SIZE);  // 跳过 Tofino 每端口 metadata
         transition parse_ethernet;
     }
 
@@ -55,6 +66,7 @@ parser IngressParser(
         pkt.extract(hdr.udp);
 		transition select(hdr.udp.dst_port) {
             UDP_PORT_ROCE:  	parse_roce;
+            /* 20001/20002：主机与交换机锁协议端口，进入锁处理流水线 */
             UDP_PORT_SERVER: 	parse_lock;
             UDP_PORT_CLIENT: 	parse_lock;
             default: 		    accept;
@@ -62,7 +74,7 @@ parser IngressParser(
     }
 
     state parse_lock {
-        pkt.extract(hdr.lock);
+        pkt.extract(hdr.lock);  /* hdr.lock.isValid() → IngressPipe 处理 */
         transition accept;
     }
 

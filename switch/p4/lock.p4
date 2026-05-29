@@ -1,3 +1,18 @@
+/*
+ * ============================================================================
+ * FissLock — 锁裂变状态机（Lock Fission State Machine）三份 stage 副本
+ * ============================================================================
+ * LockOperation_1/2/3 表项相同，寄存器 lock_agent_array_* 按 slice 分片。
+ *
+ * 五类 action（对应 BMv2 lock_op_table）：
+ *   new_agent       — 锁空闲时 ACQUIRE，授权且 machine_id 成为 agent
+ *   mcast_to_agent  — 共享锁已占用时再次 ACQUIRE，触发双组播
+ *   fwd_to_agent    — 转给当前 agent（RELEASE/独占冲突等）
+ *   transfer_agent  — TRANSFER 成功，更新 agent
+ *   reset_agent     — FREE，清除 agent
+ * ============================================================================
+ */
+
 control LockOperation_1(
 	inout header_t hdr,
 	inout metadata_t ig_md) {
@@ -24,6 +39,7 @@ control LockOperation_1(
         hdr.lock.transferred = 0;
     }
 
+    /* 共享锁二次 ACQUIRE：dest2=新 client；egress 按 rid 改 agent/client 两类包 */
     action mcast_to_agent() {
         ig_md.dest2 = (bit<16>)hdr.lock.machine_id;
         hdr.lock.multicasted = 1;
@@ -102,6 +118,7 @@ control LockOperation_1(
     }
 }
 
+/* LockOperation_2：lock.id[31:19]==1 */
 control LockOperation_2(
 	inout header_t hdr,
 	inout metadata_t ig_md) {
@@ -206,6 +223,7 @@ control LockOperation_2(
     }
 }
 
+/* LockOperation_3：lock.id[31:19]==2 */
 control LockOperation_3(
 	inout header_t hdr,
 	inout metadata_t ig_md) {

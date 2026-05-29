@@ -1,3 +1,18 @@
+/*
+ * ============================================================================
+ * FissLock Tofino 控制面主程序 — fisslock_decider
+ * ============================================================================
+ *
+ * 启动流程：
+ *   1. 解析命令行（SDE install-dir、conf-file、port-setup.bfsh）
+ *   2. bf_switchd_lib_init — 启动 Barefoot 交换机守护进程
+ *   3. driver_init() — BFRT 灌 eth_fallback 表、创建组播组（bfrt.c）
+ *   4. system(bfshell -f port-setup.bfsh) — 启用 Tofino 物理端口
+ *
+ * 运行：switch/run_decider.sh
+ * 数据面：switch/p4/switch.p4（程序名 fisslock_decider）
+ * ============================================================================
+ */
 
 #include <stdio.h>
 #include <stdlib.h>

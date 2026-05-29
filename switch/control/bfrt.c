@@ -1,3 +1,23 @@
+/*
+ * ============================================================================
+ * FissLock BFRT 驱动 — 控制面表项与组播初始化
+ * ============================================================================
+ *
+ * driver_init() 做三件事：
+ *   1. setup_bfrt — 连接 ASIC 上已编译的 P4 程序 fisslock_decider
+ *   2. eth_fallback — 每台 cluster 机器的 MAC → 交换机 egress port
+ *   3. setup_mgrps — 为每台主机创建组播组（与 ingress mcast_grp_a/b 约定一致）
+ *
+ * 组播编号约定（见 setup_mgrps 注释）：
+ *   mgrp 1..127 / 129..191：单主机 + rid 1/2（agent 通知 vs grant）
+ *   mgrp 193..254：除请求者外广播
+ *   mgrp 255：全体广播
+ *   mgrp 0,128,192：保留，ingress 不设此时副本被丢弃 → 等效单播
+ *
+ * 新手导读：switch/LEARNING_zh.md 第 4.2 节
+ * ============================================================================
+ */
+
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -340,13 +360,12 @@ static void setup_mgrps(void) {
  * Exposed functions.                                    *
  *********************************************************/
 
-/* Initialize the bfrt driver.
- */
+/* 控制面入口：交换机启动后由 main.c 调用一次 */
 void driver_init() {
   setup_bfrt();
   setup_tables();
 
-  // Install ethernet forwarding rules.
+  // 每台实验机的 MAC → 物理端口（非锁以太网走 eth_fallback）
   for (size_t i = 0; i < MACHINE_NUM; i++) {
     add_tbl_entry(mat_eth_fallback, eth_forward, 
       dst_mac, connected_machines[i].mac_addr, 

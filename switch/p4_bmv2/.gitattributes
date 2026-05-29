@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.p4 text eol=lf
+env.server* text eol=lf

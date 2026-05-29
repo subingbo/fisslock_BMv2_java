@@ -1,0 +1,28 @@
+# ============================================================================
+# simple_switch_CLI 组播配置 — 启动 simple_switch 后执行
+# 详见 switch/LEARNING_zh.md 第 3.3 节
+# ============================================================================
+# 拓扑: port 0=injector, 1=host1(agent), 2=host2(client)
+#
+# BMv2 组播语义:
+#   - ingress 设 standard_metadata.mcast_grp
+#   - 每个 mc_node 绑定 (egress_port, egress_rid)
+#   - egress 用 egress_rid 区分副本（本程序 rid 1=agent, 2=client）
+
+# --- 单播等效：agent/host_id 1、2 各一组（ingress 单播时也用 host_fwd，此处供对照）---
+mc_mgrp_create 1
+mc_node_create 1 1 1
+mc_node_associate 1 1
+
+mc_mgrp_create 2
+mc_node_create 2 2 2
+mc_node_associate 2 2
+
+# --- 共享锁二次 ACQUIRE：ingress 设 mcast_grp=299（MCAST_SHARED_GRANT）---
+# 同一组两个 node：rid=1 副本从 port1 出（agent 见 ACQUIRE+granted）
+#                  rid=2 副本从 port2 出（client 见 GRANT_WO_AGENT）
+mc_mgrp_create 299
+mc_node_create 1 1 1
+mc_node_create 2 2 2
+mc_node_associate 299 1
+mc_node_associate 299 2

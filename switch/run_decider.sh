@@ -1,4 +1,12 @@
 #!/bin/bash
+# ============================================================================
+# 启动 FissLock Tofino 控制面（fisslock_decider + port-setup.bfsh）
+# ============================================================================
+# 依赖：Barefoot SDE、已编译的 P4 程序与控制面二进制
+# 典型：./switch/run_decider.sh -p fisslock_decider -s switch/port-setup.bfsh
+# 数据面逻辑见 switch/p4/；BFRT 灌表见 control/bfrt.c
+# 新手：switch/LEARNING_zh.md
+# ============================================================================
 # Start running switchd application program
 
 function add_hugepage() {

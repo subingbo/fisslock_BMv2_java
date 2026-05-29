@@ -1,5 +1,9 @@
 #!/bin/bash
-# Start running switchd application program
+# ============================================================================
+# NetLock 基线对比用 lockmgr 启动脚本（非 FissLock 主路径）
+# ============================================================================
+# 复现实验中与 baseline/NetLock 对比时使用；FissLock 请用 run_decider.sh
+# ============================================================================
 
 function print_help() {
   echo "USAGE: $(basename ""$0"") {-p <...> | -c <...>} [OPTIONS -- SWITCHD_OPTIONS]"
