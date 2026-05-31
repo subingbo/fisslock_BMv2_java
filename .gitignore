@@ -1,3 +1,4 @@
+.idea/
 build/
 tpcc_lock_gen/main
 tatp_lock_gen/main
