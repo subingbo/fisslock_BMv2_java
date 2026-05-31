@@ -1,0 +1,2 @@
+# 若 fix-crlf.sh 也因 CRLF 无法执行，在 VM 上复制粘贴这一行（不要通过 scp 本文件）：
+sed -i 's/\r$//' ~/fisslock/java/fisslock-java/scripts/*.sh && chmod +x ~/fisslock/java/fisslock-java/scripts/*.sh && echo OK

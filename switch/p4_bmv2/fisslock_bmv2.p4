@@ -54,7 +54,8 @@ const bit<1> LOCK_EXCL     = 1;  // 独占模式
 
 /* BMv2 测试规模：单 slice，1024 把锁（id 0..1023，id 右移 10 位须为 0） */
 const bit<32> SLICE_SIZE_POW2 = 10;
-const bit<32> SLICE_MASK      = 0x3FF;
+const bit<32> SLICE_MASK      = 0x3FF;           /* 1024 locks: id & SLICE_MASK */
+const bit<32> SLICE_HIGH_MASK = 32w0xFFFFFC00; /* id 超出 slice 时高位非 0（BMv2 禁止 >>10） */
 const bit<16> MCAST_SHARED_GRANT = 299;  // 共享锁二次 ACQUIRE 使用的组播组 ID
 
 // ----- 标准 L2/L3/L4 包头（简化，无 RoCE）-----
@@ -90,20 +91,16 @@ header udp_t {
  * FissLock 锁头（UDP payload 前 17 字节，字段布局见 lib/post.h）
  * 注意：P4 里把 type 单独成字段；主机栈可能 pack 在 post_header + lock_post_header
  */
+/* 与 lib/post.h 逐字节一致（共 17 字节），勿用 bit<1> 打包以免 P4 头长度错位 */
 header lock_hdr_t {
-    bit<8>  type;           // ACQUIRE / GRANT_* / TRANSFER / FREE ...
-    bit<1>  multicasted;    // 1=ingress 已决定走组播，egress 按 rid 改包
-    bit<1>  granted;        // 1=对 agent 表示「已授权」（egress rid=1 时置位）
-    bit<1>  transferred;    // agent 是否由 transfer 迁入
-    bit<3>  reserved;
-    bit<1>  old_mode;       // TRANSFER/FREE 时：变更前的 shared/excl
-    bit<1>  mode;           // 本包请求的 shared(0) 或 excl(1)
-    bit<32> id;             // 锁 ID
-    bit<8>  machine_id;     // 请求者或下一持有者 host_id
+    bit<8>  type;
+    bit<8>  mode_old_mode;  /* bit0=mode, bit1=old_mode; bit5=transferred; bit6=granted */
+    bit<32> id;
+    bit<8>  machine_id;
     bit<32> task_id;
-    bit<8>  agent;          // 当前锁 agent（转发目标）
+    bit<8>  agent;
     bit<32> wq_size;
-    bit<8>  ncnt;           // 通知计数，须与 notification_cnt_reg 一致
+    bit<8>  ncnt;
 }
 
 /* 流水线 metadata：不写入发出的包，仅在 Ingress/Egress 间传递 */
@@ -116,6 +113,9 @@ struct metadata {
     bit<1>  agent_changed;     // counter 比较是否通过（1=可更新 agent）
     bit<1>  lock_out_of_range; // id 超出 1024
     bit<8>  fwd_host;          // host_fwd 查表键
+    bit<1>  pkt_mode;          // mode_old_mode[0]
+    bit<1>  pkt_old_mode;      // mode_old_mode[1]
+    bit<1>  multicasted;       // 组播路径标记（不写回包头）
 }
 
 struct headers {
@@ -131,7 +131,7 @@ struct headers {
  * ============================================================================
  * 锁包路径：ethernet → ipv4 → udp → (dport 20001/20002) → lock
  */
-parser Parser(packet_in packet,
+parser FissParser(packet_in packet,
               out headers hdr,
               inout metadata meta,
               inout standard_metadata_t standard_metadata) {
@@ -171,7 +171,7 @@ parser Parser(packet_in packet,
  * Ingress：锁逻辑核心（查表 + 改寄存器 + 改包头 + 定出口）
  * ============================================================================
  */
-control Ingress(inout headers hdr, inout metadata meta,
+control FissIngress(inout headers hdr, inout metadata meta,
                 inout standard_metadata_t standard_metadata) {
 
     // 每把锁一片寄存器，索引 meta.lock_index（0..1023）
@@ -241,37 +241,39 @@ control Ingress(inout headers hdr, inout metadata meta,
         notification_cnt_reg.write(idx, 0);
     }
 
-    /* 包内 ncnt 与寄存器相等则清零并 agent_changed=1，否则=0（网中仍有旧包） */
-    action cnt_cmp() {
+    /* BMv2: 禁止 action 内条件写 register；只比较，清零交给 counter_clear_table */
+    action cnt_cmp_eval() {
         bit<32> idx = meta.lock_index;
         bit<8> val;
         notification_cnt_reg.read(val, idx);
-        if (val == hdr.lock.ncnt) {
-            notification_cnt_reg.write(idx, 0);
-            meta.agent_changed = 1;
-        } else {
-            meta.agent_changed = 0;
-        }
+        meta.agent_changed = (bit<1>)(val == hdr.lock.ncnt);
     }
 
     action cnt_nop() {}
 
     table counter_table {
-        key = { hdr.lock.type: exact; hdr.lock.mode: exact; hdr.lock.old_mode: exact; }
-        actions = { cnt_new; cnt_cmp; cnt_reset; cnt_nop; }
+        key = { hdr.lock.type: exact; meta.pkt_mode: exact; meta.pkt_old_mode: exact; }
+        actions = { cnt_new; cnt_cmp_eval; cnt_reset; cnt_nop; }
         const entries = {
-            // 共享 ACQUIRE：递增 notification_cnt
             (ACQUIRE, LOCK_SHARED, 0): cnt_new();
             (ACQUIRE, LOCK_SHARED, 1): cnt_new();
-            // TRANSFER/FREE + 原 shared：比较或重置 ncnt
-            (TRANSFER, LOCK_SHARED, LOCK_SHARED): cnt_cmp();
+            (TRANSFER, LOCK_SHARED, LOCK_SHARED): cnt_cmp_eval();
             (TRANSFER, LOCK_SHARED, LOCK_EXCL): cnt_reset();
-            (TRANSFER, LOCK_EXCL, LOCK_SHARED): cnt_cmp();
+            (TRANSFER, LOCK_EXCL, LOCK_SHARED): cnt_cmp_eval();
             (TRANSFER, LOCK_EXCL, LOCK_EXCL): cnt_reset();
-            (FREE, LOCK_SHARED, LOCK_SHARED): cnt_cmp();
+            (FREE, LOCK_SHARED, LOCK_SHARED): cnt_cmp_eval();
             (FREE, LOCK_SHARED, LOCK_EXCL): cnt_reset();
-            (FREE, LOCK_EXCL, LOCK_SHARED): cnt_cmp();
+            (FREE, LOCK_EXCL, LOCK_SHARED): cnt_cmp_eval();
             (FREE, LOCK_EXCL, LOCK_EXCL): cnt_reset();
+        }
+        default_action = cnt_nop();
+    }
+
+    table counter_clear_table {
+        key = { meta.agent_changed: exact; }
+        actions = { cnt_reset; cnt_nop; }
+        const entries = {
+            1: cnt_reset();
         }
         default_action = cnt_nop();
     }
@@ -286,13 +288,13 @@ control Ingress(inout headers hdr, inout metadata meta,
         hdr.lock.agent = hdr.lock.machine_id;
         hdr.lock.type = GRANT_W_AGENT;
         hdr.udp.dst_port = UDP_PORT_CLIENT;
-        hdr.lock.transferred = 0;
+        hdr.lock.mode_old_mode = hdr.lock.mode_old_mode & 8w0xDF;
     }
 
     /* 共享锁已占用时再次 ACQUIRE：组播通知 agent + 新 client（路径 3） */
     action op_mcast_to_agent() {
         meta.dest2 = (bit<16>)hdr.lock.machine_id;
-        hdr.lock.multicasted = 1;
+        meta.multicasted = 1;
         bit<8> ag;
         lock_agent_reg.read(ag, meta.lock_index);
         hdr.lock.agent = ag;
@@ -311,7 +313,7 @@ control Ingress(inout headers hdr, inout metadata meta,
         hdr.lock.agent = hdr.lock.machine_id;
         hdr.lock.type = GRANT_W_AGENT;
         hdr.udp.dst_port = UDP_PORT_CLIENT;
-        hdr.lock.transferred = 1;
+        hdr.lock.mode_old_mode = hdr.lock.mode_old_mode | 8w0x20;
     }
 
     action op_reset_agent() {
@@ -325,7 +327,7 @@ control Ingress(inout headers hdr, inout metadata meta,
     table lock_op_table {
         key = {
             hdr.lock.type: exact;
-            hdr.lock.mode: exact;
+            meta.pkt_mode: exact;
             meta.lock_free_mode: exact;
             meta.lock_rw_mode: exact;
         }
@@ -359,7 +361,7 @@ control Ingress(inout headers hdr, inout metadata meta,
     }
 
     table rw_table {
-        key = { hdr.lock.type: exact; meta.lock_free_mode: exact; hdr.lock.mode: exact; }
+        key = { hdr.lock.type: exact; meta.lock_free_mode: exact; meta.pkt_mode: exact; }
         actions = { rw_set_shared; rw_set_excl; rw_get_mode; op_nop; }
         const entries = {
             (TRANSFER, LOCK_ACQUIRED, LOCK_SHARED): rw_set_shared();
@@ -383,7 +385,6 @@ control Ingress(inout headers hdr, inout metadata meta,
             2: set_egress(2);
         }
         default_action = drop();
-        size = 16;
     }
 
     apply {
@@ -393,21 +394,23 @@ control Ingress(inout headers hdr, inout metadata meta,
             meta.dest2 = 0;
             meta.agent_changed = 0;
             meta.lock_out_of_range = 0;
-            hdr.lock.multicasted = 0;
-            hdr.lock.granted = 0;
+            meta.multicasted = 0;
+            meta.pkt_mode = hdr.lock.mode_old_mode[0:0];
+            meta.pkt_old_mode = hdr.lock.mode_old_mode[1:1];
 
             meta.lock_index = hdr.lock.id & SLICE_MASK;
-            if ((hdr.lock.id >> SLICE_SIZE_POW2) != 0) {
+            if ((hdr.lock.id & SLICE_HIGH_MASK) != 0) {
                 meta.lock_out_of_range = 1;
             }
 
             if (meta.lock_out_of_range == 0) {
-                // ② 通知计数
+                // ② 通知计数（比较与清零分两张表，满足 BMv2 无条件写 register）
                 counter_table.apply();
+                counter_clear_table.apply();
 
                 // ③ 决策树：是否在途旧包 / 是否 agent 转发的 GRANT_WO_AGENT
                 if ((hdr.lock.type == TRANSFER || hdr.lock.type == FREE) &&
-                    hdr.lock.old_mode == LOCK_SHARED && meta.agent_changed == 0) {
+                    meta.pkt_old_mode == LOCK_SHARED && meta.agent_changed == 0) {
                     /* stale in-flight：跳过 lock op，仅按 hdr.lock.agent 转发 */
                 } else if (hdr.lock.type == GRANT_WO_AGENT) {
                     hdr.lock.agent = hdr.lock.machine_id;
@@ -424,15 +427,15 @@ control Ingress(inout headers hdr, inout metadata meta,
                 }
             }
 
-            // ⑤ 转发：组播或单播
-            if (hdr.lock.multicasted == 1) {
+            // ⑤ 转发：组播或单播（host_id 与 BMv2 port 号一致：1→port1, 2→port2）
+            if (meta.multicasted == 1) {
                 standard_metadata.mcast_grp = MCAST_SHARED_GRANT;
             } else {
-                meta.fwd_host = hdr.lock.agent;
-                if (meta.fwd_host == 0) {
-                    meta.fwd_host = hdr.lock.machine_id;
+                bit<8> eg = hdr.lock.agent;
+                if (eg == 0) {
+                    eg = hdr.lock.machine_id;
                 }
-                host_fwd.apply();
+                standard_metadata.egress_spec = (bit<9>)eg;
             }
         }
     }
@@ -444,25 +447,33 @@ control Ingress(inout headers hdr, inout metadata meta,
  * ============================================================================
  * simple_switch 为组播 299 复制两份：egress_rid=1 → agent，rid=2 → client
  */
-control Egress(inout headers hdr, inout metadata meta,
+control FissEgress(inout headers hdr, inout metadata meta,
                inout standard_metadata_t standard_metadata) {
     apply {
-        if (hdr.lock.isValid() && hdr.lock.multicasted == 1) {
+        if (hdr.lock.isValid() && meta.multicasted == 1) {
             if (standard_metadata.egress_rid == 2) {
                 hdr.lock.type = GRANT_WO_AGENT;
                 hdr.udp.dst_port = UDP_PORT_CLIENT;
-                hdr.lock.multicasted = 0;
+                meta.multicasted = 0;
             } else if (standard_metadata.egress_rid == 1) {
                 hdr.lock.type = ACQUIRE;
                 hdr.udp.dst_port = UDP_PORT_SERVER;
-                hdr.lock.multicasted = 0;
-                hdr.lock.granted = 1;
+                meta.multicasted = 0;
+                hdr.lock.mode_old_mode = hdr.lock.mode_old_mode | 8w0x40;
             }
         }
     }
 }
 
-control Deparser(packet_out packet, in headers hdr) {
+control FissVerifyChecksum(inout headers hdr, inout metadata meta) {
+    apply { }
+}
+
+control FissComputeChecksum(inout headers hdr, inout metadata meta) {
+    apply { }
+}
+
+control FissDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
@@ -471,4 +482,12 @@ control Deparser(packet_out packet, in headers hdr) {
     }
 }
 
-V1Switch(Parser(), Ingress(), Egress(), Deparser()) main;
+/* p4c 1.2.x v1model 需要 6 个参数（含 Verify/ComputeChecksum） */
+V1Switch(
+    FissParser(),
+    FissVerifyChecksum(),
+    FissIngress(),
+    FissEgress(),
+    FissComputeChecksum(),
+    FissDeparser()
+) main;

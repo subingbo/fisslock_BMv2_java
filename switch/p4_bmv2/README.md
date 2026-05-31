@@ -62,6 +62,6 @@ sudo python3 test/test_paths.py --iface veth-inject --pcap-dir build/pcap
 ## 文件
 
 - `fisslock_bmv2.p4` — 合并后的数据面
-- `setup/multicast.txt` — 组播组 1、2、299
+- `setup/multicast.txt` — 组播组 299（两节点 rid 1/2 → port 1/2）；说明见 `setup/multicast.txt.README`
 - `test/test_paths.py` — Scapy 三条路径测试
 - `run_bmv2.sh` — 编译 + 启动脚本

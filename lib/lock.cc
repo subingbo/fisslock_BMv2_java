@@ -877,6 +877,20 @@ lock_req lock_acquire_async(uint64_t lkey, task_id task, lock_state op) {
   // subsequent accesses to the lock metadata.
   if (enb_local_grants) {
     unique_lock<mutex> lk(lmeta(lock)->mtx);
+    lock_holder me = LOCK_HOLDER(LOCALHOST_ID, task);
+
+#ifdef FISSLOCK_BMV2
+    /* BMv2 演示：交换机可能对重复 ACQUIRE 再 GRANT；若本机已有独占 holder，
+     * 必须本地入队，勿再 send_post_acquire（避免 B 在 A 持锁时立刻 GRANT）。 */
+    if (op == LOCK_EXCL && lmeta(lock)->mode == LOCK_EXCL &&
+        !lock_no_holders(lock) && !lock_has_holder(lock, me)) {
+      handle_suspend_acquire(lock, LOCALHOST_ID, task, op);
+      req = lock_prepare_wait(lock, task);
+      lk.unlock();
+      timer_acquire_sent(id(lock), task);
+      return req;
+    }
+#endif
 
     // Fast path: if the local host is the agent, handle the 
     // request locally.
@@ -1056,6 +1070,23 @@ int lock_release(uint64_t lkey, task_id task, lock_state op) {
         return 0;
 
       } else { /* Lock transfer */
+#ifdef FISSLOCK_BMV2
+        {
+          auto wq_it = lmeta(lock)->wqueue.begin();
+          if (wq_it != lmeta(lock)->wqueue.end() && wq_it->host == LOCALHOST_ID) {
+            task_id next_task = wq_it->task;
+            lock_state next_op = (lock_state)wq_it->op;
+            lmeta(lock)->wqueue.erase(wq_it);
+            lmeta(lock)->mode = next_op;
+            lock_add_holder(lock, LOCK_HOLDER(LOCALHOST_ID, next_task));
+            LOCK_LOG(id(lock), next_task, "BMv2 local grant after release");
+            lk.unlock();
+            lock_local_notify(lock, next_task);
+            timer_schedule_from_to(id(lock), task, next_task);
+            return 0;
+          }
+        }
+#endif
         LOCK_LOG(id(lock), task, "transfer the lock");
         timer_schedule_start(id(lock), task);
         auto wq_entry = lmeta(lock)->wqueue.begin();

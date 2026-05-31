@@ -214,11 +214,32 @@ bash scripts/start_switch.sh
 **`Cannot open libbmv2.so`**  
 → `sudo ldconfig`；确认 `make install` 成功
 
-**`simple_switch_CLI` 组播报错**  
-→ 先等 switch 启动 2 秒；BMv2 版本不同 CLI 语法可能略有差异，对照 `build/switch.log`
+**`simple_switch_CLI` / `ModuleNotFoundError: No module named 'thrift'`**  
+→ `simple_switch_CLI` 走系统 Python（如 3.12），与 p4dev venv 无关。修复后重灌组播：
 
-**测试无 pcap 输出**  
-→ 确认 `build/pcap/` 下生成 `0.pcap` `1.pcap` `2.pcap`；发包 iface 必须是 **`veth-inject`**（不是 veth-switch）
+```bash
+# Ubuntu 24.04 勿用 sudo pip3（PEP 668）；用 apt：
+sudo apt-get install -y python3-thrift
+# 组播在 start_switch 时已灌；仅当 switch.log 无 mgrp(299) 时再:
+bash scripts/apply_multicast.sh
+# 若提示「已存在」或 mc_dump 有 mgrp(299)，说明已成功，勿重复灌（会 ERROR）
+echo mc_dump | sudo simple_switch_CLI | grep -A3 mgrp
+```
+
+**测试无 pcap / `[warn] no pcap under build/pcap`**  
+→ 发包 iface 必须是 **`veth-inject`**。  
+→ **不要在 `start_switch` 之后 `rm build/pcap/*.pcap`**：交换机已打开旧文件句柄，删文件后不会再写新 pcap。正确顺序：
+
+```bash
+bash scripts/stop_switch.sh
+sudo rm -f build/pcap/*.pcap
+RESTART=1 bash scripts/start_switch.sh
+bash scripts/apply_multicast.sh    # thrift 修好后
+sudo /path/to/p4dev-python-venv/bin/python3 test/test_paths.py \
+  --iface veth-inject --only all --pcap-dir build/pcap
+```
+
+→ 若曾删过 pcap 且未重启，用 `RESTART=1 bash scripts/start_switch.sh` 或 `bash scripts/restart_switch.sh`。
 
 **要跑官方 C++/DPDK 全栈**  
 → 需另装 DPDK、R2 子模块等，见仓库根目录 `README.md`；BMv2 验证只需本节步骤。

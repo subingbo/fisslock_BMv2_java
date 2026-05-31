@@ -2,6 +2,11 @@
 #ifndef __FISSLOCK_NET_H
 #define __FISSLOCK_NET_H
 
+#ifdef FISSLOCK_BMV2
+/* BMv2 + libpcap 构建：见 lib/bmv2/ */
+#include "../bmv2/net.h"
+#else
+
 /**
  * Frontend of the network module, which provides the abstraction of
  * packet send/recv and environment setup, etc.
@@ -55,5 +60,7 @@ void init_header_template();
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* FISSLOCK_BMV2 */
 
 #endif

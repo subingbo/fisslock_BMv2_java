@@ -1,0 +1,19 @@
+# BMv2 组播（simple_switch_CLI）
+
+- 仅组 **299**，与 `fisslock_bmv2.p4` 中 `MCAST_SHARED_GRANT` 一致。
+- port：0=inject，1=host1，2=host2（`mc_node_create` 第二参数为 egress 端口号）。
+- **egress_rid**（`mc_node_create` 第一参数）：1=agent（ACQUIRE+granted），2=client（GRANT_WO_AGENT）。
+- **mc_node_associate** 第二参数是 **node handle**（首个节点为 0，第二个为 1），不是 rid。
+- CLI 输入文件勿写 `#` 行；说明放本 README。
+
+示例（共享锁二次 ACQUIRE 路径）：
+
+```
+mc_mgrp_create 299
+mc_node_create 1 1
+mc_node_associate 299 0
+mc_node_create 2 2
+mc_node_associate 299 1
+```
+
+改组播后请重启交换机再灌表，避免 handle 与旧节点冲突。

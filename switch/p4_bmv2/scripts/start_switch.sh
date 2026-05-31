@@ -53,9 +53,20 @@ fi
 echo "==> setup veth"
 sudo bash "$ROOT/scripts/setup_veth.sh"
 
-if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-  echo "simple_switch already running (pid $(cat "$PIDFILE"))"
-  exit 0
+_running() {
+  pgrep -f "simple_switch.*fisslock_bmv2.json" >/dev/null 2>&1
+}
+
+if _running; then
+  if [[ "${RESTART:-0}" == "1" ]]; then
+    echo "==> RESTART=1: stop old simple_switch"
+    bash "$ROOT/scripts/stop_switch.sh"
+    sleep 1
+  else
+    echo "simple_switch already running (pid $(cat "$PIDFILE"))"
+    echo "  若 build/pcap 为空或删过 pcap，请: RESTART=1 bash scripts/start_switch.sh"
+    exit 0
+  fi
 fi
 
 echo "==> start simple_switch"
@@ -71,10 +82,20 @@ echo $! | sudo tee "$PIDFILE" >/dev/null
 sleep 2
 
 echo "==> configure multicast"
-sudo "$CLI" <"$ROOT/setup/multicast.txt" >>"$LOG" 2>&1 || true
+if grep -vE '^\s*#|^\s*$' "$ROOT/setup/multicast.txt" | sudo "$CLI" >>"$LOG" 2>&1; then
+  if grep -q 'mgrp(299)' "$LOG" 2>/dev/null || echo mc_dump | sudo "$CLI" 2>/dev/null | grep -q 'mgrp(299)'; then
+    echo "  multicast: mgrp 299 OK"
+  else
+    echo "  [warn] 未在日志中看到 mgrp(299)，请: bash scripts/apply_multicast.sh"
+  fi
+else
+  echo "  [warn] multicast CLI failed (Ubuntu: sudo apt-get install -y python3-thrift)"
+  echo "  run: bash scripts/apply_multicast.sh"
+fi
 
 echo ""
 echo "Started. pid=$(cat "$PIDFILE")"
+echo "  组播已在启动时灌表，一般无需再 bash scripts/apply_multicast.sh"
 echo "  log:  $LOG"
 echo "  pcap: $PCAP"
 echo "  test: sudo python3 $ROOT/test/test_paths.py --iface veth-inject --pcap-dir $PCAP"
